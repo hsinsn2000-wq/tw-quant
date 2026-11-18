@@ -189,7 +189,8 @@ async function apiInst(code) {
   return [200, { rows: await institutional(code, dates) }];
 }
 
-const DIST = path.join(__dirname, 'dist', 'standalone.html');
+// 同時支援兩種擺法:完整專案(dist/standalone.html)與只有 3 個檔案的精簡部署包(根目錄的 standalone.html)
+const DIST = [path.join(__dirname, 'standalone.html'), path.join(__dirname, 'dist', 'standalone.html')].find(p => fs.existsSync(p)) || path.join(__dirname, 'dist', 'standalone.html');
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x');
   try {
