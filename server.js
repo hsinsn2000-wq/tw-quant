@@ -189,6 +189,52 @@ async function apiInst(code) {
   return [200, { rows: await institutional(code, dates) }];
 }
 
+/* ---------- 即時報價(證交所 MIS,非官方公開端點,盤中約每 5 秒更新) ---------- */
+let misCookie = { v: '', t: 0 };
+async function misSession() {
+  if (misCookie.v && Date.now() - misCookie.t < 10 * MIN) return misCookie.v;
+  const r = await fetch('https://mis.twse.com.tw/stock/index.jsp', { headers: { 'user-agent': UA }, signal: AbortSignal.timeout(10000) });
+  const sc = typeof r.headers.getSetCookie === 'function' ? r.headers.getSetCookie() : [];
+  const v = sc.map(s => s.split(';')[0]).join('; ');
+  misCookie = { v, t: Date.now() };
+  return v;
+}
+// 欄位:c 代號 n 名稱 z 最新成交價 y 昨收 o 開 h 高 l 低 v 累計成交量(張) t 時間 d 日期(YYYYMMDD) a/b 五檔賣價/買價(以 _ 分隔)
+// 尚未成交時 z 為 "-",此時 price 為 null,前端不更新價格。
+function parseMis(j) {
+  const m = j && Array.isArray(j.msgArray) ? j.msgArray[0] : null;
+  if (!m) return null;
+  const first = s => { const x = String(s || '').split('_').map(num).find(v => v != null && v > 0); return x == null ? null : x; };
+  const d = String(m.d || '');
+  return {
+    code: m.c, name: m.n || null,
+    price: num(m.z), prev: num(m.y), open: num(m.o), high: num(m.h), low: num(m.l),
+    volLots: num(m.v), time: m.t || null,
+    date: /^\d{8}$/.test(d) ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : null,
+    bid: first(m.b), ask: first(m.a)
+  };
+}
+const quoteCache = new Map();
+async function apiQuote(code) {
+  const hit = quoteCache.get(code);
+  if (hit && Date.now() - hit.t < 4000) return [200, hit.v];
+  const market = await detectMarket(code);
+  if (!market) return [404, { error: `找不到代號 ${code}` }];
+  const ex = `${market === 'TWSE' ? 'tse' : 'otc'}_${code}.tw`;
+  const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${ex}&json=1&delay=0&_=${Date.now()}`;
+  let q = null;
+  for (let attempt = 0; attempt < 2 && !q; attempt++) {
+    const cookie = await misSession();
+    const r = await fetch(url, { headers: { 'user-agent': UA, accept: 'application/json', referer: 'https://mis.twse.com.tw/stock/fibest.jsp', cookie }, signal: AbortSignal.timeout(10000) });
+    if (!r.ok) throw new Error('即時報價上游回應 HTTP ' + r.status);
+    q = parseMis(await r.json());
+    if (!q) misCookie = { v: '', t: 0 }; // 可能是 session 過期,重新取得後再試一次
+  }
+  if (!q) return [502, { error: '即時報價暫時沒有資料' }];
+  quoteCache.set(code, { t: Date.now(), v: q });
+  return [200, q];
+}
+
 // 同時支援兩種擺法:完整專案(dist/standalone.html)與只有 3 個檔案的精簡部署包(根目錄的 standalone.html)
 const DIST = [path.join(__dirname, 'standalone.html'), path.join(__dirname, 'dist', 'standalone.html')].find(p => fs.existsSync(p)) || path.join(__dirname, 'dist', 'standalone.html');
 const server = http.createServer(async (req, res) => {
@@ -199,10 +245,10 @@ const server = http.createServer(async (req, res) => {
       return res.end(fs.readFileSync(DIST));
     }
     if (u.pathname === '/healthz') return send(res, 200, { ok: true });
-    if (u.pathname === '/api/stock' || u.pathname === '/api/inst') {
+    if (u.pathname === '/api/stock' || u.pathname === '/api/inst' || u.pathname === '/api/quote') {
       const code = String(u.searchParams.get('code') || '').toUpperCase();
       if (!validCode(code)) return send(res, 400, { error: '股票代號格式不正確' });
-      const [status, body] = u.pathname === '/api/stock' ? await apiStock(code) : await apiInst(code);
+      const [status, body] = u.pathname === '/api/stock' ? await apiStock(code) : u.pathname === '/api/inst' ? await apiInst(code) : await apiQuote(code);
       return send(res, status, body);
     }
     send(res, 404, { error: 'not found' });
@@ -215,4 +261,4 @@ if (require.main === module) {
   if (!fs.existsSync(DIST)) { console.error('找不到 dist/standalone.html,請先執行 node build.js'); process.exit(1); }
   server.listen(PORT, () => console.log(`台股量化查詢 http://localhost:${PORT}/#2330`));
 }
-module.exports = { parseTwseDay, parseTpexDay, rocToISO, rocCompactToISO, num, monthsBack };
+module.exports = { parseMis, parseTwseDay, parseTpexDay, rocToISO, rocCompactToISO, num, monthsBack };

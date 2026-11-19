@@ -96,6 +96,7 @@ button:focus-visible, input:focus-visible, .file:focus-within { outline: 2px sol
 .hero .name { font-size: 20px; font-weight: 700; }
 .tag { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
 .tag.demo { background: var(--warn-soft); color: var(--warn); }
+.tag.live { background: var(--up-soft); color: var(--up); font-family: var(--font-num); }
 .hero .px { display: flex; align-items: baseline; flex-wrap: wrap; column-gap: 14px; margin-top: 2px; }
 .hero .price { font: 600 40px/1.15 var(--font-num); letter-spacing: -0.02em; }
 .hero .chg { font: 500 16px var(--font-num); }
@@ -654,7 +655,7 @@ td.lab { font-family: var(--font-ui); }
 
   /* ---------- 狀態 ---------- */
   const S = {
-    code: null, data: null, an: null, st: null, status: 'idle', err: '', token: 0,
+    code: null, data: null, an: null, st: null, status: 'idle', err: '', token: 0, live: null,
     tab: 'overview', range: 122, ov: { ma5: true, ma20: true, ma60: false, bb: false },
     bt: { strat: 'sma', fast: 5, slow: 20, lo: 30, hi: 70, n: 9, kmax: 100, fee: 0.1425, tax: 0.3 }
   };
@@ -667,12 +668,55 @@ td.lab { font-family: var(--font-ui); }
     lsSet(RECENT_KEY, r);
   }
 
+  /* ---------- 盤中即時報價(僅獨立網站版) ---------- */
+  // 台北時間週一到週五 08:55 至 13:35
+  function isMarketOpen() {
+    const t = new Date(Date.now() + 8 * 3600e3), w = t.getUTCDay(), m = t.getUTCHours() * 60 + t.getUTCMinutes();
+    return w >= 1 && w <= 5 && m >= 535 && m <= 815;
+  }
+  let liveTimer = null;
+  function stopLive() { if (liveTimer) clearInterval(liveTimer); liveTimer = null; }
+  function refreshHero() { const el = document.querySelector('.hero'); if (el && S.status === 'ready') el.outerHTML = heroHtml(); }
+  function applyQuote(q) {
+    S.live = { time: q.time, err: null };
+    if (q.price != null && q.date) {
+      const bars = S.data.bars, last = bars[bars.length - 1];
+      const bar = { d: q.date, o: q.open != null ? q.open : q.price, h: q.high != null ? q.high : q.price, l: q.low != null ? q.low : q.price, c: q.price, v: (q.volLots || 0) * 1000 };
+      if (last.d === q.date) bars[bars.length - 1] = bar;
+      else if (q.date > last.d) bars.push(bar);
+      S.an = Q.analyze(bars); S.st = Q.stats(bars, { rf: 0.015 });
+    }
+    refreshHero();
+    if (S.tab === 'overview' || S.tab === 'chart') renderBody();
+  }
+  function startLive(code, token) {
+    stopLive();
+    if (API_BASE === null || !isMarketOpen()) return;
+    const tick = async () => {
+      if (document.hidden || token !== S.token || S.status !== 'ready') return;
+      if (!isMarketOpen()) { stopLive(); return; }
+      try {
+        const r = await fetch(API_BASE + '/api/quote?code=' + encodeURIComponent(code));
+        const q = await r.json();
+        if (token !== S.token) return;
+        if (!r.ok || q.error) throw new Error(q.error || 'HTTP ' + r.status);
+        applyQuote(q);
+      } catch (e) {
+        if (token !== S.token) return;
+        S.live = { err: e.message }; refreshHero();
+      }
+    };
+    tick();
+    liveTimer = setInterval(tick, 15000);
+  }
+
   async function go(raw) {
     const code = String(raw || '').trim().toUpperCase();
     if (!/^[0-9A-Z]{4,7}$/.test(code)) {
       S.status = 'error'; S.err = '請輸入 4 到 6 碼的股票代號,例如 2330、0050、6488。'; render(); return;
     }
     const token = ++S.token;
+    stopLive(); S.live = null;
     S.code = code; S.status = 'loading';
     $('#code').value = code === 'DEMO' ? '' : code;
     try { if (location.hash !== '#' + code) location.hash = code; } catch (e) { /* ignore */ }
@@ -691,6 +735,7 @@ td.lab { font-family: var(--font-ui); }
     }
     render();
     if (S.status === 'ready' && API_BASE !== null && S.data.instState === 'loading') loadInst(code, token);
+    if (S.status === 'ready' && API_BASE !== null) startLive(code, token);
   }
 
   async function loadInst(code, token) {
@@ -747,17 +792,21 @@ td.lab { font-family: var(--font-ui); }
     const d = S.data, b = d.bars, n = b.length, last = b[n - 1], prev = b[n - 2];
     const chg = last.c - prev.c, chgP = chg / prev.c, k = cls(chg);
     const arrow = chg > 0 ? '▲' : chg < 0 ? '▼' : '';
+    const lv = S.live;
+    const liveTag = lv && lv.time && !lv.err ? `<span class="tag live">即時 ${esc(lv.time)}</span>` : '';
+    const liveErr = lv && lv.err ? `<div class="meta">即時報價暫時讀不到(${esc(lv.err)}),顯示的是最近一筆資料,系統會自動重試。</div>` : '';
     return `<section class="hero">
-      <div class="id"><span class="code">${esc(d.code)}</span><span class="name">${esc(d.name)}</span>${d.demo ? '<span class="tag demo">模擬資料</span>' : `<span class="tag">${esc(d.market || '')}</span>`}</div>
+      <div class="id"><span class="code">${esc(d.code)}</span><span class="name">${esc(d.name)}</span>${d.demo ? '<span class="tag demo">模擬資料</span>' : `<span class="tag">${esc(d.market || '')}</span>`}${liveTag}</div>
       <div class="px"><span class="price ${k}">${fmt(last.c)}</span><span class="chg ${k}">${arrow} ${fmt(Math.abs(chg))} (${pct(chgP)})</span></div>
       <div class="meta mono">${last.d} · 成交 ${fmtLots(last.v)} 張 · 資料 ${b[0].d} 至 ${last.d},共 ${n} 筆 · 紅漲綠跌</div>
+      ${liveErr}
       ${d.demo ? '<div class="banner">這是用亂數產生的模擬走勢,只用來展示介面與指標,不是任何真實股票的行情。</div>' : ''}
     </section>`;
   }
 
   function footHtml() {
     const src = API_BASE !== null
-      ? '資料來源:臺灣證券交易所、證券櫃檯買賣中心公開資料,經本站後端轉送,可能有延遲。價格為未還原權息的原始價格。'
+      ? '資料來源:臺灣證券交易所、證券櫃檯買賣中心公開資料,經本站後端轉送。盤中(週一到週五 9:00 至 13:30)會每 15 秒更新即時報價,來自證交所 MIS 的非官方公開端點,可能延遲或中斷;收盤後顯示收盤資料。價格為未還原權息的原始價格。'
       : S.data.demo ? '示範資料為亂數模擬。' : '資料來源:你匯入的 CSV,只存在這個瀏覽器。';
     const csvOps = S.data.csv ? `<p><span class="file"><input id="csvFile2" class="csv" type="file" accept=".csv,text/csv" multiple><label class="link" for="csvFile2">追加 CSV</label></span> · <button type="button" class="link" data-act="delcsv">刪除這檔的匯入資料</button> <span id="csvMsg" role="status"></span></p>` : '';
     return `<footer class="foot"><p>${src}</p>${csvOps}<p>指標與回測僅供研究與學習,不構成投資建議。歷史績效不代表未來表現,回測未計入滑價、股利與流動性限制。</p></footer>`;
