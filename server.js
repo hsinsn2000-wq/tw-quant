@@ -214,6 +214,18 @@ function parseMis(j) {
     bid: first(m.b), ask: first(m.a)
   };
 }
+// 證交所在兩筆成交之間會把最新成交價 z 回成 "-"。處理順序:
+// 1. 有成交價 → 記下來(priceKind = trade)
+// 2. 沒有 → 用這檔股票同一天上一次拿到的成交價(priceKind = last)
+// 3. 還沒有 → 用最佳委買、委賣價的中間價(priceKind = mid),僅供參考
+const lastTrade = new Map();
+function fillPrice(q) {
+  if (q.price != null) { lastTrade.set(q.code, { price: q.price, date: q.date }); q.priceKind = 'trade'; return q; }
+  const lt = lastTrade.get(q.code);
+  if (lt && lt.date === q.date) { q.price = lt.price; q.priceKind = 'last'; }
+  else if (q.bid != null && q.ask != null) { q.price = (q.bid + q.ask) / 2; q.priceKind = 'mid'; }
+  return q;
+}
 const quoteCache = new Map();
 async function apiQuote(code) {
   const hit = quoteCache.get(code);
@@ -231,6 +243,7 @@ async function apiQuote(code) {
     if (!q) misCookie = { v: '', t: 0 }; // 可能是 session 過期,重新取得後再試一次
   }
   if (!q) return [502, { error: '即時報價暫時沒有資料' }];
+  fillPrice(q);
   quoteCache.set(code, { t: Date.now(), v: q });
   return [200, q];
 }
@@ -261,4 +274,4 @@ if (require.main === module) {
   if (!fs.existsSync(DIST)) { console.error('找不到 dist/standalone.html,請先執行 node build.js'); process.exit(1); }
   server.listen(PORT, () => console.log(`台股量化查詢 http://localhost:${PORT}/#2330`));
 }
-module.exports = { parseMis, parseTwseDay, parseTpexDay, rocToISO, rocCompactToISO, num, monthsBack };
+module.exports = { parseMis, fillPrice, parseTwseDay, parseTpexDay, rocToISO, rocCompactToISO, num, monthsBack };
