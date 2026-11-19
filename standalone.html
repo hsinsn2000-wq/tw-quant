@@ -793,7 +793,7 @@ td.lab { font-family: var(--font-ui); }
     const chg = last.c - prev.c, chgP = chg / prev.c, k = cls(chg);
     const arrow = chg > 0 ? '▲' : chg < 0 ? '▼' : '';
     const lv = S.live;
-    const liveTag = lv && lv.time && !lv.err && lv.priced ? `<span class="tag live">即時 ${esc(lv.time)}${lv.kind === 'mid' ? ' · 委買賣中價' : ''}</span>` : '';
+    const liveTag = lv && lv.time && !lv.err && lv.priced ? `<span class="tag live">即時 ${esc(lv.time)}${lv.kind === 'mid' ? ' · 委買賣中價' : lv.kind === 'pz' ? ' · 參考價' : ''}</span>` : '';
     const liveErr = lv && lv.err ? `<div class="meta">即時報價暫時讀不到(${esc(lv.err)}),顯示的是最近一筆資料,系統會自動重試。</div>` : '';
     return `<section class="hero">
       <div class="id"><span class="code">${esc(d.code)}</span><span class="name">${esc(d.name)}</span>${d.demo ? '<span class="tag demo">模擬資料</span>' : `<span class="tag">${esc(d.market || '')}</span>`}${liveTag}</div>

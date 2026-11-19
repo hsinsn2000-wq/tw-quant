@@ -209,6 +209,7 @@ function parseMis(j) {
   return {
     code: m.c, name: m.n || null,
     price: num(m.z), prev: num(m.y), open: num(m.o), high: num(m.h), low: num(m.l),
+    pz: num(m.pz),
     volLots: num(m.v), time: m.t || null,
     date: /^\d{8}$/.test(d) ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : null,
     bid: first(m.b), ask: first(m.a)
@@ -221,15 +222,17 @@ function parseMis(j) {
 const lastTrade = new Map();
 function fillPrice(q) {
   if (q.price != null) { lastTrade.set(q.code, { price: q.price, date: q.date }); q.priceKind = 'trade'; return q; }
+  // pz 是回傳裡另一個價格欄位,z 為空時有些情況會有值(是否為成交價尚未確認,所以標成 pz)
+  if (q.pz != null && q.pz > 0) { q.price = q.pz; q.priceKind = 'pz'; return q; }
   const lt = lastTrade.get(q.code);
   if (lt && lt.date === q.date) { q.price = lt.price; q.priceKind = 'last'; }
   else if (q.bid != null && q.ask != null) { q.price = (q.bid + q.ask) / 2; q.priceKind = 'mid'; }
   return q;
 }
 const quoteCache = new Map();
-async function apiQuote(code) {
+async function apiQuote(code, raw) {
   const hit = quoteCache.get(code);
-  if (hit && Date.now() - hit.t < 4000) return [200, hit.v];
+  if (!raw && hit && Date.now() - hit.t < 4000) return [200, hit.v];
   const market = await detectMarket(code);
   if (!market) return [404, { error: `找不到代號 ${code}` }];
   const ex = `${market === 'TWSE' ? 'tse' : 'otc'}_${code}.tw`;
@@ -239,7 +242,9 @@ async function apiQuote(code) {
     const cookie = await misSession();
     const r = await fetch(url, { headers: { 'user-agent': UA, accept: 'application/json', referer: 'https://mis.twse.com.tw/stock/fibest.jsp', cookie }, signal: AbortSignal.timeout(10000) });
     if (!r.ok) throw new Error('即時報價上游回應 HTTP ' + r.status);
-    q = parseMis(await r.json());
+    const j = await r.json();
+    if (raw) return [200, { raw: (j && j.msgArray && j.msgArray[0]) || null, rtcode: j && j.rtcode }]; // 除錯用:原封不動回傳證交所的欄位
+    q = parseMis(j);
     if (!q) misCookie = { v: '', t: 0 }; // 可能是 session 過期,重新取得後再試一次
   }
   if (!q) return [502, { error: '即時報價暫時沒有資料' }];
@@ -261,7 +266,7 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === '/api/stock' || u.pathname === '/api/inst' || u.pathname === '/api/quote') {
       const code = String(u.searchParams.get('code') || '').toUpperCase();
       if (!validCode(code)) return send(res, 400, { error: '股票代號格式不正確' });
-      const [status, body] = u.pathname === '/api/stock' ? await apiStock(code) : u.pathname === '/api/inst' ? await apiInst(code) : await apiQuote(code);
+      const [status, body] = u.pathname === '/api/stock' ? await apiStock(code) : u.pathname === '/api/inst' ? await apiInst(code) : await apiQuote(code, u.searchParams.get('raw') === '1');
       return send(res, status, body);
     }
     send(res, 404, { error: 'not found' });
