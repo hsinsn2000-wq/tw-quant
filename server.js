@@ -210,22 +210,29 @@ function parseMis(j) {
     code: m.c, name: m.n || null,
     price: num(m.z), prev: num(m.y), open: num(m.o), high: num(m.h), low: num(m.l),
     pz: num(m.pz),
+    // 回傳裡的 trade 物件是另一筆「最近成交」,附有自己的時間;可能比整份快照舊很多,使用前要比對時間
+    tradeZ: m.trade ? num(m.trade.z) : null, tradeT: m.trade && m.trade.t ? m.trade.t : null,
     volLots: num(m.v), time: m.t || null,
     date: /^\d{8}$/.test(d) ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : null,
     bid: first(m.b), ask: first(m.a)
   };
 }
-// 證交所在兩筆成交之間會把最新成交價 z 回成 "-"。處理順序:
-// 1. 有成交價 → 記下來(priceKind = trade)
-// 2. 沒有 → 用這檔股票同一天上一次拿到的成交價(priceKind = last)
-// 3. 還沒有 → 用最佳委買、委賣價的中間價(priceKind = mid),僅供參考
+// 證交所常把最新成交價 z 回成 "-"(實測 2330 盤中 z 與 pz 都是 "-")。處理順序:
+// 1. z 有值 → 成交價
+// 2. trade.z 有值,且 trade 時間距快照時間不超過 60 秒 → 成交價(太舊的不採用,實測曾差 17 分鐘)
+// 3. pz 有值 → 參考價
+// 4. 同一天、2 分鐘內自己記下的成交價 → 沿用
+// 5. 最佳委買、委賣價的中間價 → 估價,前端會標示
 const lastTrade = new Map();
+const secOf = t => { const m = String(t || '').match(/^(\d{1,2}):(\d{2}):(\d{2})$/); return m ? +m[1] * 3600 + +m[2] * 60 + +m[3] : null; };
 function fillPrice(q) {
-  if (q.price != null) { lastTrade.set(q.code, { price: q.price, date: q.date }); q.priceKind = 'trade'; return q; }
-  // pz 是回傳裡另一個價格欄位,z 為空時有些情況會有值(是否為成交價尚未確認,所以標成 pz)
+  const remember = () => lastTrade.set(q.code, { price: q.price, date: q.date, at: Date.now() });
+  if (q.price != null) { remember(); q.priceKind = 'trade'; return q; }
+  const a = secOf(q.tradeT), b = secOf(q.time);
+  if (q.tradeZ != null && a != null && b != null && b - a >= 0 && b - a <= 60) { q.price = q.tradeZ; remember(); q.priceKind = 'trade'; return q; }
   if (q.pz != null && q.pz > 0) { q.price = q.pz; q.priceKind = 'pz'; return q; }
   const lt = lastTrade.get(q.code);
-  if (lt && lt.date === q.date) { q.price = lt.price; q.priceKind = 'last'; }
+  if (lt && lt.date === q.date && Date.now() - lt.at <= 120000) { q.price = lt.price; q.priceKind = 'last'; }
   else if (q.bid != null && q.ask != null) { q.price = (q.bid + q.ask) / 2; q.priceKind = 'mid'; }
   return q;
 }
