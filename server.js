@@ -260,6 +260,31 @@ async function apiQuote(code, raw) {
   return [200, q];
 }
 
+// 分鐘 K:資料來自 Yahoo 財經 chart 端點(證交所免費端點沒有分 K)。1 分 K 只保留近 7 天,其餘近 1 個月。
+const TF = { 1: ['1m', '7d'], 5: ['5m', '1mo'], 15: ['15m', '1mo'], 30: ['30m', '1mo'] };
+function parseYahooChart(j) {
+  const r = j && j.chart && j.chart.result && j.chart.result[0];
+  if (!r || !Array.isArray(r.timestamp) || !r.indicators || !r.indicators.quote || !r.indicators.quote[0]) return [];
+  const q = r.indicators.quote[0], off = (r.meta && r.meta.gmtoffset) != null ? r.meta.gmtoffset : 28800, bars = [];
+  r.timestamp.forEach((ts, i) => {
+    const o = q.open[i], h = q.high[i], l = q.low[i], c = q.close[i];
+    if (o == null || h == null || l == null || c == null) return;
+    const iso = new Date((ts + off) * 1000).toISOString();
+    bars.push({ d: iso.slice(0, 10) + ' ' + iso.slice(11, 16), o, h, l, c, v: q.volume[i] || 0 });
+  });
+  return bars;
+}
+async function apiIntraday(code, tf) {
+  if (!TF[tf]) return [400, { error: '不支援的週期' }];
+  const market = await detectMarket(code);
+  if (!market) return [404, { error: `找不到代號 ${code}` }];
+  const [iv, rg] = TF[tf];
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${code}${market === 'TWSE' ? '.TW' : '.TWO'}?interval=${iv}&range=${rg}`;
+  const bars = parseYahooChart(await getJSON(url, 20000));
+  if (!bars.length) return [502, { error: '分鐘資料暫時沒有內容' }];
+  return [200, { code, tf, bars }];
+}
+
 // 同時支援兩種擺法:完整專案(dist/standalone.html)與只有 3 個檔案的精簡部署包(根目錄的 standalone.html)
 const DIST = [path.join(__dirname, 'standalone.html'), path.join(__dirname, 'dist', 'standalone.html')].find(p => fs.existsSync(p)) || path.join(__dirname, 'dist', 'standalone.html');
 const server = http.createServer(async (req, res) => {
@@ -270,10 +295,10 @@ const server = http.createServer(async (req, res) => {
       return res.end(fs.readFileSync(DIST));
     }
     if (u.pathname === '/healthz') return send(res, 200, { ok: true });
-    if (u.pathname === '/api/stock' || u.pathname === '/api/inst' || u.pathname === '/api/quote') {
+    if (['/api/stock', '/api/inst', '/api/quote', '/api/intraday'].includes(u.pathname)) {
       const code = String(u.searchParams.get('code') || '').toUpperCase();
       if (!validCode(code)) return send(res, 400, { error: '股票代號格式不正確' });
-      const [status, body] = u.pathname === '/api/stock' ? await apiStock(code) : u.pathname === '/api/inst' ? await apiInst(code) : await apiQuote(code, u.searchParams.get('raw') === '1');
+      const [status, body] = u.pathname === '/api/stock' ? await apiStock(code) : u.pathname === '/api/inst' ? await apiInst(code) : u.pathname === '/api/intraday' ? await apiIntraday(code, +u.searchParams.get('tf')) : await apiQuote(code, u.searchParams.get('raw') === '1');
       return send(res, status, body);
     }
     send(res, 404, { error: 'not found' });
@@ -286,4 +311,4 @@ if (require.main === module) {
   if (!fs.existsSync(DIST)) { console.error('找不到 dist/standalone.html,請先執行 node build.js'); process.exit(1); }
   server.listen(PORT, () => console.log(`台股量化查詢 http://localhost:${PORT}/#2330`));
 }
-module.exports = { parseMis, fillPrice, parseTwseDay, parseTpexDay, rocToISO, rocCompactToISO, num, monthsBack };
+module.exports = { parseYahooChart, parseMis, fillPrice, parseTwseDay, parseTpexDay, rocToISO, rocCompactToISO, num, monthsBack };

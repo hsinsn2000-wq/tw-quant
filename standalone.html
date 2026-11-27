@@ -656,7 +656,7 @@ td.lab { font-family: var(--font-ui); }
   /* ---------- 狀態 ---------- */
   const S = {
     code: null, data: null, an: null, st: null, status: 'idle', err: '', token: 0, live: null,
-    tab: 'overview', range: 122, off: 0, ctype: 'k', ov: { ma5: true, ma20: true, ma60: false, bb: false },
+    tab: 'overview', range: 122, off: 0, ctype: 'k', tf: 'D', intra: null, ov: { ma5: true, ma20: true, ma60: false, bb: false },
     bt: { strat: 'sma', fast: 5, slow: 20, lo: 30, hi: 70, n: 9, kmax: 100, fee: 0.1425, tax: 0.3 }
   };
   let CH = null;
@@ -717,7 +717,7 @@ td.lab { font-family: var(--font-ui); }
     }
     const token = ++S.token;
     stopLive(); S.live = null;
-    S.code = code; S.status = 'loading'; S.off = 0;
+    S.code = code; S.status = 'loading'; S.off = 0; S.tf = 'D'; S.intra = null; S.range = 122;
     $('#code').value = code === 'DEMO' ? '' : code;
     try { if (location.hash !== '#' + code) location.hash = code; } catch (e) { /* ignore */ }
     render();
@@ -736,6 +736,21 @@ td.lab { font-family: var(--font-ui); }
     render();
     if (S.status === 'ready' && API_BASE !== null && S.data.instState === 'loading') loadInst(code, token);
     if (S.status === 'ready' && API_BASE !== null) startLive(code, token);
+  }
+
+  async function loadIntra(tf) {
+    const code = S.code, token = S.token;
+    S.intra = { tf, bars: null, err: null };
+    const upd = () => { if (token === S.token && S.tf === tf && S.tab === 'chart') renderBody(); };
+    try {
+      const r = await fetch(API_BASE + '/api/intraday?code=' + encodeURIComponent(code) + '&tf=' + tf);
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || 'HTTP ' + r.status);
+      if (token !== S.token) return;
+      S.intra = { tf, bars: j.bars, an: Q.analyze(j.bars), err: null };
+      S.range = Math.min(120, j.bars.length); S.off = 0;
+    } catch (e) { if (token !== S.token) return; S.intra = { tf, bars: null, err: e.message }; }
+    upd();
   }
 
   async function loadInst(code, token) {
@@ -884,7 +899,7 @@ td.lab { font-family: var(--font-ui); }
     if (o.dates) {
       [0, 1 / 3, 2 / 3, 1].forEach((f, k) => {
         const i = Math.round((o.n - 1) * f);
-        s += `<text class="ax" text-anchor="${k === 0 ? 'start' : k === 3 ? 'end' : 'middle'}" x="${x(i).toFixed(1)}" y="${H - 5}">${o.dates[i].slice(2)}</text>`;
+        s += `<text class="ax" text-anchor="${k === 0 ? 'start' : k === 3 ? 'end' : 'middle'}" x="${x(i).toFixed(1)}" y="${H - 5}">${(o.dfmt || (d => d.slice(2)))(o.dates[i])}</text>`;
       });
     }
     s += `<line class="xh" y1="${padT}" y2="${padT + ih}" x1="-10" x2="-10"/></svg>`;
@@ -913,10 +928,12 @@ td.lab { font-family: var(--font-ui); }
     const tg = (k, label, c) => `<button type="button" class="tg ${S.ov[k] ? 'on' : ''}" data-act="ov" data-v="${k}" aria-pressed="${!!S.ov[k]}"><i class="${c}"></i>${label}</button>`;
     return `<section class="sec">
       <div class="ctrl">
-        <div class="seg" role="group" aria-label="期間">${rg.map(([v, t]) => `<button type="button" class="${S.range === v ? 'on' : ''}" data-act="range" data-v="${v}">${t}</button>`).join('')}</div>
+        ${API_BASE !== null ? `<div class="seg" role="group" aria-label="K線週期">${[['D', '日'], ['30', '30分'], ['15', '15分'], ['5', '5分'], ['1', '1分']].map(([v, t]) => `<button type="button" class="${S.tf === v ? 'on' : ''}" data-act="tf" data-v="${v}">${t}</button>`).join('')}</div>` : ''}
+        ${S.tf === 'D' ? `<div class="seg" role="group" aria-label="期間">${rg.map(([v, t]) => `<button type="button" class="${S.range === v ? 'on' : ''}" data-act="range" data-v="${v}">${t}</button>`).join('')}</div>` : ''}
         <div class="seg" role="group" aria-label="圖形">${[['k', 'K線'], ['l', '折線']].map(([v, t]) => `<button type="button" class="${S.ctype === v ? 'on' : ''}" data-act="ctype" data-v="${v}">${t}</button>`).join('')}</div>
         ${tg('ma5', 'MA5', 'c1')}${tg('ma20', 'MA20', 'c2')}${tg('ma60', 'MA60', 'c3')}${tg('bb', '布林', 'cb')}
       </div>
+      ${S.tf !== 'D' ? `<p class="note" id="intraMsg" role="status">${S.intra && S.intra.tf === S.tf && S.intra.err ? '分鐘資料載入失敗:' + esc(S.intra.err) : S.intra && S.intra.tf === S.tf && S.intra.bars ? '分鐘 K 資料來自 Yahoo 財經,可能延遲數分鐘;共 ' + S.intra.bars.length + ' 根。' : '載入分鐘資料中…'}</p>` : ''}
       <div class="ro" id="ro"></div>
       <div class="panels"><div class="chart" id="charts"></div></div>
       <p class="note">紅色代表收盤高於開盤(上漲),綠色代表下跌。<b>雙指開合</b>(電腦用滾輪)縮放,<b>單指左右拖曳</b>平移,<b>點一下</b>查看當日數值。<button type="button" class="link" data-act="reset">重設視圖</button></p>
@@ -926,7 +943,10 @@ td.lab { font-family: var(--font-ui); }
   function drawMain() {
     const el = $('#charts');
     if (!el) return;
-    const bars = S.data.bars, an = S.an, N = bars.length;
+    const intra = S.tf !== 'D';
+    if (intra && !(S.intra && S.intra.tf === S.tf && S.intra.bars)) { el.innerHTML = ''; CH = null; return; }
+    const bars = intra ? S.intra.bars : S.data.bars, an = intra ? S.intra.an : S.an, N = bars.length;
+    const dfmt = intra ? (d => d.slice(5)) : undefined;
     const n = !S.range || S.range > N ? N : S.range, off = Math.max(0, Math.min(S.off || 0, N - n)), s = N - n - off;
     const W = Math.max(280, Math.floor(el.clientWidth) || 320);
     // 價格軸範圍
@@ -998,7 +1018,7 @@ td.lab { font-family: var(--font-ui); }
     const [m1, m2] = rangeOf([an.dif, an.dea, an.hist], s, n);
     const mm = Math.max(Math.abs(m1), Math.abs(m2), 1e-6) * 1.15;
     const pMacd = panel({
-      w: W, h: 112, n, min: -mm, max: mm, ticks: niceTicks(-mm, mm, 2), fmt: v => (Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(2)), title: 'MACD(12,26,9)', dates: bars.slice(s).map(b => b.d), label: 'MACD 圖',
+      w: W, h: 112, n, min: -mm, max: mm, ticks: niceTicks(-mm, mm, 2), fmt: v => (Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(2)), title: 'MACD(12,26,9)', dfmt, dates: bars.slice(s).map(b => b.d), label: 'MACD 圖',
       layers: [ctx => `<line class="zl" x1="${ctx.padL}" x2="${ctx.right}" y1="${ctx.y(0).toFixed(1)}" y2="${ctx.y(0).toFixed(1)}"/>`,
         ctx => {
           const bw = Math.max(1, ctx.slot * 0.62), y0 = ctx.y(0); let o = '';
@@ -1236,8 +1256,12 @@ td.lab { font-family: var(--font-ui); }
     if (a === 'open') go(v);
     else if (a === 'tab') { S.tab = v; renderBody(); }
     else if (a === 'range') { S.range = +v; S.off = 0; renderBody(); }
+    else if (a === 'tf') {
+      S.tf = v; S.off = 0;
+      if (v === 'D') { S.range = 122; renderBody(); } else { S.range = 120; renderBody(); loadIntra(v); }
+    }
     else if (a === 'ctype') { S.ctype = v; renderBody(); }
-    else if (a === 'reset') { S.range = 122; S.off = 0; renderBody(); }
+    else if (a === 'reset') { S.range = S.tf === 'D' ? 122 : Math.min(120, (S.intra && S.intra.bars ? S.intra.bars.length : 120)); S.off = 0; renderBody(); }
     else if (a === 'ov') { S.ov[v] = !S.ov[v]; renderBody(); }
     else if (a === 'strat') { S.bt.strat = v; renderBody(); }
     else if (a === 'delcsv') { lsDel(CSV_KEY + S.code); S.data = null; S.status = 'missing'; render(); }
